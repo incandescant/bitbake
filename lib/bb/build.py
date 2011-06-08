@@ -223,9 +223,9 @@ def exec_func_shell(function, d, runfile, cwd=None):
 
     with open(runfile, 'w') as script:
         script.write('#!/bin/sh -e\n')
+        if logger.isEnabledFor(logging.DEBUG):
+            script.write("set -x\n")
         data.emit_func(function, script, d)
-
-        script.write("set -x\n")
         if cwd:
             script.write("cd %s\n" % cwd)
         script.write("%s\n" % function)
