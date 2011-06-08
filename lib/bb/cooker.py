@@ -108,6 +108,9 @@ class BBCooker:
 
         self.configuration.data = bb.data.init()
 
+        if not self.server_registration_cb:
+            bb.data.setVar("BB_WORKERCONTEXT", "1", self.configuration.data)
+
         bb.data.inheritFromOS(self.configuration.data)
 
         try:
@@ -672,7 +675,8 @@ class BBCooker:
         for var in bb.data.getVar('__BBHANDLERS', data) or []:
             bb.event.register(var, bb.data.getVar(var, data))
 
-        bb.fetch.fetcher_init(data)
+        if data.getVar("BB_WORKERCONTEXT", False) is None:
+            bb.fetch.fetcher_init(data)
         bb.codeparser.parser_cache_init(data)
         bb.parse.init_parser(data)
         bb.event.fire(bb.event.ConfigParsed(), data)
