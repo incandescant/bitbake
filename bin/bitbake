@@ -39,8 +39,8 @@ import bb.msg
 from bb import cooker
 from bb import ui
 from bb import server
-#from bb.server import none
-from bb.server import process
+from bb.server import none
+#from bb.server import process
 #from bb.server import xmlrpc
 
 __version__ = "1.13.0"
@@ -186,8 +186,8 @@ Default BBFILES are the .bb files in the current directory.""")
     # of the UIs (e.g. for DISPLAY, etc.)
     bb.utils.clean_environment()
 
-    #server = bb.server.none.BitBakeServer()    
-    server = bb.server.process.BitBakeServer()
+    server = bb.server.none.BitBakeServer()    
+    #server = bb.server.process.BitBakeServer()
     #server = bb.server.xmlrpc.BitBakeServer()
 
     server.initServer()
