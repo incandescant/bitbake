@@ -136,7 +136,7 @@ class Configurator(gobject.GObject):
 
     def _addConfigFile(self, path):
         pref, sep, filename = path.rpartition("/")
-        if filename == "local.conf" or filename == "hob.local.conf":
+        if filename == "local.conf":
             self._loadLocalConf(path)
         elif filename == "bblayers.conf":
             self._loadLayerConf(path)
