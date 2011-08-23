@@ -202,6 +202,9 @@ def getName(e):
     else:
         return e.__name__
 
+class DataInitialised(Event):
+    """ Data object initialised """
+
 class ConfigParsed(Event):
     """Configuration Parsing Complete"""
 

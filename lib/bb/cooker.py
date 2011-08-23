@@ -163,6 +163,8 @@ class BBCooker:
     def loadConfigurationData(self):
         self.configuration.data = bb.data.init()
 
+        bb.event.fire(bb.event.DataInitialised(), self.configuration.data)
+
         filtered_keys = bb.utils.approved_variables()
         bb.data.inheritFromOS(self.configuration.data, self.savedenv, filtered_keys)
 
