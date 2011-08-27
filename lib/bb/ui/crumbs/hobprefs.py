@@ -38,13 +38,13 @@ class HobPrefs(gtk.Dialog):
         else:
             self.selected_image_types = handler.remove_image_output_type(ot)
 
-        self.configurator.setLocalConfVar('IMAGE_FSTYPES', "%s" % " ".join(self.selected_image_types).lstrip(" "))
+        self.configurator.set_conf_string('IMAGE_FSTYPES', "%s" % " ".join(self.selected_image_types).lstrip(" "))
 
     def sdk_machine_combo_changed_cb(self, combo, handler):
         sdk_mach = combo.get_active_text()
 	if sdk_mach != self.curr_sdk_mach:
             self.curr_sdk_mach = sdk_mach
-            self.configurator.setLocalConfVar('SDKMACHINE', sdk_mach)
+            self.configurator.set_conf_string('SDKMACHINE', sdk_mach)
             handler.set_sdk_machine(sdk_mach)
 
     def update_sdk_machines(self, handler, sdk_machines):
@@ -67,7 +67,7 @@ class HobPrefs(gtk.Dialog):
         distro = combo.get_active_text()
 	if distro != self.curr_distro:
             self.curr_distro = distro
-            self.configurator.setLocalConfVar('DISTRO', distro)
+            self.configurator.set_conf_string('DISTRO', distro)
             handler.set_distro(distro)
             self.reload_required = True
 
@@ -91,7 +91,7 @@ class HobPrefs(gtk.Dialog):
         package_format = combo.get_active_text()
         if package_format != self.curr_package_format:
             self.curr_package_format = package_format
-            self.configurator.setLocalConfVar('PACKAGE_CLASSES', 'package_%s' % package_format)
+            self.configurator.set_conf_string('PACKAGE_CLASSES', 'package_%s' % package_format)
             handler.set_package_format(package_format)
             self.reload_required = True
 
@@ -125,40 +125,40 @@ class HobPrefs(gtk.Dialog):
 
         if new_incompatible != orig_incompatible:
             self.handler.set_incompatible_license(new_incompatible)
-            self.configurator.setLocalConfVar('INCOMPATIBLE_LICENSE', new_incompatible)
+            self.configurator.set_conf_string('INCOMPATIBLE_LICENSE', new_incompatible)
             self.reload_required = True
 
     def change_bb_threads_cb(self, spinner):
         val = spinner.get_value_as_int()
         self.handler.set_bbthreads(val)
-        self.configurator.setLocalConfVar('BB_NUMBER_THREADS', val)
+        self.configurator.set_conf_string('BB_NUMBER_THREADS', val)
 
     def change_make_threads_cb(self, spinner):
         val = spinner.get_value_as_int()
         self.handler.set_pmake(val)
-        self.configurator.setLocalConfVar('PARALLEL_MAKE', "-j %s" % val)
+        self.configurator.set_conf_string('PARALLEL_MAKE', "-j %s" % val)
 
     def toggle_toolchain_cb(self, check):
         enabled = check.get_active()
-        toolchain = '0'
+        toolchain = 'false'
         if enabled:
-            toolchain = '1'
+            toolchain = 'true'
         self.handler.toggle_toolchain(enabled)
-        self.configurator.setLocalConfVar('HOB_BUILD_TOOLCHAIN', toolchain)
+        self.configurator.hob_conf.set('hob', 'BuildToolchain', toolchain)
 
     def toggle_headers_cb(self, check):
         enabled = check.get_active()
-        headers = '0'
+        headers = 'false'
         if enabled:
-            headers = '1'
+            headers = 'true'
         self.handler.toggle_toolchain_headers(enabled)
-        self.configurator.setLocalConfVar('HOB_BUILD_TOOLCHAIN_HEADERS', headers)
+        self.configurator.hob_conf.set('hob', 'BuildToolchainHeaders', toolchain)
 
     def set_parent_window(self, parent):
         self.set_transient_for(parent)
 
     def write_changes(self):
-        self.configurator.writeLocalConf()
+        self.configurator.write_hob_conf()
 
     def prefs_response_cb(self, dialog, response):
         if self.reload_required:
@@ -166,8 +166,8 @@ class HobPrefs(gtk.Dialog):
             self.reload_required = False
 
     def __init__(self, configurator, handler, curr_sdk_mach, curr_distro, pclass,
-                 pmake, bbthread, selected_image_types, all_image_types,
-                 gplv3disabled, build_toolchain, build_toolchain_headers):
+                 pmake, bbthread, selected_image_types, gplv3disabled,
+                 build_toolchain, build_toolchain_headers):
         """
         """
         gtk.Dialog.__init__(self, "Preferences", None,
@@ -182,6 +182,11 @@ class HobPrefs(gtk.Dialog):
         self.handler = handler
         self.configurator = configurator
 
+        self.reload_required = False
+        self.distro_handler_id = None
+        self.sdk_machine_handler_id = None
+        self.package_handler_id = None
+
         self.curr_sdk_mach = curr_sdk_mach
         self.curr_distro = curr_distro
         self.curr_package_format = pclass
@@ -192,10 +197,7 @@ class HobPrefs(gtk.Dialog):
         self.build_toolchain = build_toolchain
         self.build_toolchain_headers = build_toolchain_headers
 
-        self.reload_required = False
-        self.distro_handler_id = None
-        self.sdk_machine_handler_id = None
-        self.package_handler_id = None
+        all_image_types = self.handler.server.runCommand(["getVariable", "IMAGE_TYPES"])
 
         left = gtk.SizeGroup(gtk.SIZE_GROUP_HORIZONTAL)
         right = gtk.SizeGroup(gtk.SIZE_GROUP_HORIZONTAL)
@@ -226,7 +228,6 @@ class HobPrefs(gtk.Dialog):
         check = gtk.CheckButton("Exclude GPLv3 packages")
         check.set_tooltip_text("Check this box to prevent GPLv3 packages from being included in your image")
         check.show()
-        check.set_active(self.gplv3disabled)
         check.connect("toggled", self.include_gplv3_cb)
         hbox.pack_start(check, expand=False, fill=False, padding=6)
         hbox = gtk.HBox(False, 12)
@@ -283,7 +284,7 @@ class HobPrefs(gtk.Dialog):
         # gtk.Adjustment
         spin_max = 30 # seems like a high enough arbitrary number
         hbox.pack_start(label, expand=False, fill=False, padding=6)
-        bbadj = gtk.Adjustment(value=self.bbthread, lower=1, upper=spin_max, step_incr=1)
+        bbadj = gtk.Adjustment(value=float(self.bbthread), lower=1, upper=spin_max, step_incr=1)
         bbspinner = gtk.SpinButton(adjustment=bbadj, climb_rate=1, digits=0)
         bbspinner.show()
         bbspinner.connect("value-changed", self.change_bb_threads_cb)
@@ -291,7 +292,7 @@ class HobPrefs(gtk.Dialog):
         label = gtk.Label("Make threads:")
         label.show()
         hbox.pack_start(label, expand=False, fill=False, padding=6)
-        madj = gtk.Adjustment(value=self.pmake, lower=1, upper=spin_max, step_incr=1)
+        madj = gtk.Adjustment(value=float(self.pmake), lower=1, upper=spin_max, step_incr=1)
         makespinner = gtk.SpinButton(adjustment=madj, climb_rate=1, digits=0)
         makespinner.connect("value-changed", self.change_make_threads_cb)
         makespinner.show()
@@ -313,7 +314,7 @@ class HobPrefs(gtk.Dialog):
         pbox.pack_start(hbox, expand=False, fill=False, padding=6)
         toolcheck = gtk.CheckButton("Build external development toolchain with image")
         toolcheck.show()
-        toolcheck.set_active(self.build_toolchain)
+        toolcheck.set_active(bool(self.build_toolchain))
         toolcheck.connect("toggled", self.toggle_toolchain_cb)
         hbox.pack_start(toolcheck, expand=False, fill=False, padding=6)
         hbox = gtk.HBox(False, 12)
@@ -328,7 +329,7 @@ class HobPrefs(gtk.Dialog):
         hbox.pack_start(self.sdk_machine_combo, expand=False, fill=False, padding=6)
         headerscheck = gtk.CheckButton("Include development headers with toolchain")
         headerscheck.show()
-        headerscheck.set_active(self.build_toolchain_headers)
+        headerscheck.set_active(bool(self.build_toolchain_headers))
         headerscheck.connect("toggled", self.toggle_headers_cb)
         hbox.pack_start(headerscheck, expand=False, fill=False, padding=6)
         self.connect("response", self.prefs_response_cb)

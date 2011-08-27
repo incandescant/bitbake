@@ -345,8 +345,9 @@ class RunningBuildTreeView (gtk.TreeView):
 
         self._add_to_clipboard(paste_url)
 
-    def clipboard_handler(self, widget, data):
+    def copy_handler(self, widget, data):
         """
+        Copy the selected log data to the clipboard.
         """
         (model, it) = data
         message = model.get(it, model.COL_MESSAGE)[0]

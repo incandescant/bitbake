@@ -36,10 +36,10 @@ extraCaches = ['bb.cache_extra:HobRecipeInfo']
 
 class MainWindow (gtk.Window):
             
-    def __init__(self, taskmodel, handler, configurator, prefs, layers, mach):
+    def __init__(self, taskmodel, handler, configurator, layers):
         gtk.Window.__init__(self)
         # global state
-        self.curr_mach = mach
+        self.curr_mach = None
         self.machine_handler_id = None
         self.image_combo_id = None
         self.generating = False
@@ -47,13 +47,14 @@ class MainWindow (gtk.Window):
         self.selected_image = None
         self.selected_packages = None
         self.stopping = False
+        self.prefs = None
 
         self.model = taskmodel
         self.model.connect("tasklist-populated", self.update_model)
         self.model.connect("image-changed", self.image_changed_string_cb)
         self.handler = handler
+        self.handler.connect("config-loaded", self.conf_loaded_cb)
         self.configurator = configurator
-        self.prefs = prefs
         self.layers = layers
         self.save_path = None
         self.dirty = False
@@ -86,6 +87,35 @@ class MainWindow (gtk.Window):
         self.nb.set_current_page(0)
         self.nb.set_show_tabs(False)
         vbox.pack_start(self.nb, expand=True, fill=True)
+
+    def conf_loaded_cb(self, handler):
+        self.curr_mach = handler.server.runCommand(["getVariable", "MACHINE"])
+        curr_sdk_machine = handler.server.runCommand(["getVariable", "SDKMACHINE"])
+        if not curr_sdk_machine:
+            curr_sdk_machine = handler.server.runCommand(["getVariable", "SDK_ARCH"])
+        curr_distro = handler.server.runCommand(["getVariable", "DISTRO"])
+        if not curr_distro:
+            curr_distro = "defaultsetup"
+        pclasses = handler.server.runCommand(["getVariable", "PACKAGE_CLASSES"]).split(' ')
+        pkg, sep, pclass = pclasses[0].rpartition('_')
+        bbthread = handler.server.runCommand(["getVariable", "BB_NUMBER_THREADS"])
+        pmake = int(handler.server.runCommand(["getVariable", "PARALLEL_MAKE"]).lstrip('-j '))
+        sel_images = handler.server.runCommand(["getVariable", "IMAGE_FSTYPES"])
+        incompatible = (handler.server.runCommand(["getVariable", "INCOMPATIBLE_LICENSE"]) or "").lower()
+        if 'gplv3' in incompatible:
+            gplv3disabled = True
+        else:
+            gplv3disabled = False
+        build_toolchain = self.configurator.hob_conf.getboolean('hob', 'BuildToolchain')
+        build_toolchain_headers = self.configurator.hob_conf.getboolean('hob', 'BuildToolchainHeaders')
+
+        self.prefs = HobPrefs(self.configurator, handler, curr_sdk_machine,
+                              curr_distro, pclass, pmake, bbthread, sel_images,
+                              gplv3disabled, build_toolchain, build_toolchain_headers)
+        self.prefs.set_parent_window(self)
+        self.handler.connect("sdk-machines-updated", self.prefs.update_sdk_machines)
+        self.handler.connect("distros-updated", self.prefs.update_distros)
+        self.handler.connect("package-formats-found", self.prefs.update_package_formats)
 
     def destroy_window(self, widget, event):
         self.quit()
@@ -133,6 +163,9 @@ class MainWindow (gtk.Window):
         dialog.destroy()
         self.set_busy_cursor(False)
         gtk.main_quit()
+
+    def command_failed_cb(self, handler, error):
+        print(error)
 
     def scroll_tv_cb(self, model, path, it, view):
         view.scroll_to_cell(path)
@@ -192,8 +225,8 @@ class MainWindow (gtk.Window):
             self.curr_mach = mach
             # Flush this straight to the file as MACHINE is changed
             # independently of other 'Preferences'
-            self.configurator.setLocalConfVar('MACHINE', mach)
-            self.configurator.writeLocalConf()
+            self.configurator.set_conf_string('MACHINE', mach)
+            self.configurator.write_hob_conf()
             handler.set_machine(mach)
             handler.reload_data()
 
@@ -459,11 +492,7 @@ class MainWindow (gtk.Window):
             path, sep, image_name = image_name.rpartition("/")
 
             rep.writeRecipe(recipepath, self.model)
-            # In the case where we saved the file for the purpose of building
-            # it we should then delete it so that the users workspace doesn't
-            # contain files they haven't explicitly saved there.
-            if not self.save_path:
-                self.files_to_clean.append(recipepath)
+            self.files_to_clean.append(recipepath)
 
             self.handler.build_image(image_name, self.configurator)
         else:
@@ -984,59 +1013,13 @@ def main (server, eventHandler):
 
     taskmodel = TaskListModel()
     configurator = Configurator()
-    handler = HobHandler(taskmodel, server)
-    mach = server.runCommand(["getVariable", "MACHINE"])
-    sdk_mach = server.runCommand(["getVariable", "SDKMACHINE"])
-    # If SDKMACHINE not set the default SDK_ARCH is used so we
-    # should represent that in the GUI
-    if not sdk_mach:
-        sdk_mach = server.runCommand(["getVariable", "SDK_ARCH"])
-    distro = server.runCommand(["getVariable", "DISTRO"])
-    bbthread = server.runCommand(["getVariable", "BB_NUMBER_THREADS"])
-    if not bbthread:
-        bbthread = 1
-    else:
-        bbthread = int(bbthread)
-    pmake = server.runCommand(["getVariable", "PARALLEL_MAKE"])
-    if not pmake:
-        pmake = 1
-    else:
-        # The PARALLEL_MAKE variable will be of the format: "-j 3" and we only
-        # want a number for the spinner, so strip everything from the variable
-        # up to and including the space
-        pmake = int(pmake.lstrip("-j "))
-
-    selected_image_types = server.runCommand(["getVariable", "IMAGE_FSTYPES"])
-    all_image_types = server.runCommand(["getVariable", "IMAGE_TYPES"])
-
-    pclasses = server.runCommand(["getVariable", "PACKAGE_CLASSES"]).split(" ")
-    # NOTE: we're only supporting one value for PACKAGE_CLASSES being set
-    # this seems OK because we're using the first package format set in
-    # PACKAGE_CLASSES and that's the package manager used for the rootfs
-    pkg, sep, pclass = pclasses[0].rpartition("_")
-
-    incompatible = server.runCommand(["getVariable", "INCOMPATIBLE_LICENSE"])
-    gplv3disabled = False
-    if incompatible and incompatible.lower().find("gplv3") != -1:
-        gplv3disabled = True
-
-    build_toolchain = bool(server.runCommand(["getVariable", "HOB_BUILD_TOOLCHAIN"]))
-    handler.toggle_toolchain(build_toolchain)
-    build_headers = bool(server.runCommand(["getVariable", "HOB_BUILD_TOOLCHAIN_HEADERS"]))
-    handler.toggle_toolchain_headers(build_headers)
-
-    prefs = HobPrefs(configurator, handler, sdk_mach, distro, pclass,
-                     pmake, bbthread, selected_image_types, all_image_types,
-                     gplv3disabled, build_toolchain, build_headers)
+    handler = HobHandler(taskmodel, server, configurator)
     layers = LayerEditor(configurator, None)
-    window = MainWindow(taskmodel, handler, configurator, prefs, layers, mach)
-    prefs.set_parent_window(window)
+    window = MainWindow(taskmodel, handler, configurator, layers)
     layers.set_parent_window(window)
-    window.show_all ()
+    window.disable_widgets()
+    window.show_all()
     handler.connect("machines-updated", window.update_machines)
-    handler.connect("sdk-machines-updated", prefs.update_sdk_machines)
-    handler.connect("distros-updated", prefs.update_distros)
-    handler.connect("package-formats-found", prefs.update_package_formats)
     handler.connect("generating-data", window.busy)
     handler.connect("data-generated", window.data_generated)
     handler.connect("reload-triggered", window.reload_triggered_cb)
@@ -1044,11 +1027,11 @@ def main (server, eventHandler):
     configurator.connect("layers-changed", handler.reload_data)
     handler.connect("config-found", configurator.configFound)
     handler.connect("fatal-error", window.fatal_error_cb)
+    handler.connect("command-failed", window.command_failed_cb)
 
     try:
-        # kick the while thing off
-        handler.current_command = handler.CFG_PATH_LOCAL
-        server.runCommand(["findConfigFilePath", "local.conf"])
+        handler.current_command = handler.CFG_PATH_LAYERS
+        server.runCommand(["findConfigFilePath", "bblayers.conf"])
     except xmlrpclib.Fault:
         print("XMLRPC Fault getting commandline:\n %s" % x)
         return 1

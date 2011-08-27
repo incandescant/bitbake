@@ -20,7 +20,7 @@
 
 import gobject
 import copy
-import re, os
+import re, os, ConfigParser, tempfile
 from bb import data
 
 class Configurator(gobject.GObject):
@@ -40,12 +40,48 @@ class Configurator(gobject.GObject):
 
     def __init__(self):
         gobject.GObject.__init__(self)
-        self.local = None
+
         self.bblayers = None
         self.enabled_layers = {}
         self.loaded_layers = {}
-        self.config = {}
-        self.orig_config = {}
+
+        # Is it safe to assume .config exists?
+        confdir = os.path.expanduser("~/.config")
+        bb.utils.mkdirhier(confdir)
+        self.hob_conf_path = os.path.join(confdir, "hob.cfg")
+        self.hob_conf = ConfigParser.RawConfigParser()
+        if not os.path.exists(self.hob_conf_path):
+            self.create_initial_hob_conf()
+        self.hob_conf.read(self.hob_conf_path)
+
+    def create_initial_hob_conf(self):
+        self.hob_conf.add_section('hob')
+        self.hob_conf.set('hob', 'HobConfVersion', '1')
+        tempdir = os.path.join(tempfile.gettempdir(), 'hob-images')
+        self.hob_conf.set('hob', 'HobRecipePath', tempdir)
+        self.hob_conf.set('hob', 'BuildToolchain', 'false')
+        self.hob_conf.set('hob', 'BuildToolchainHeaders', 'false')
+        self.hob_conf.add_section('BitBake')
+        bb.utils.mkdirhier(tempdir)
+        self.write_hob_conf(False)
+
+    def write_hob_conf(self, backup=True):
+        if backup:
+            bkup = "%s~" % self.hob_conf_path
+            os.rename(self.hob_conf_path, bkup)
+
+        with open(self.hob_conf_path, 'w') as conf_file:
+            self.hob_conf.write(conf_file)
+
+    def get_conf_string(self, confvar):
+        try:
+            val = self.hob_conf.get('BitBake', confvar)
+            return val
+        except ConfigParser.NoOptionError:
+            return None
+
+    def set_conf_string(self, confvar, confval):
+        self.hob_conf.set('BitBake', confvar, confval)
 
     # NOTE: cribbed from the cooker...
     def _parse(self, f, data, include=False):
@@ -54,69 +90,6 @@ class Configurator(gobject.GObject):
         except (IOError, bb.parse.ParseError) as exc:
             parselog.critical("Unable to parse %s: %s" % (f, exc))
             sys.exit(1)
-
-    def _loadLocalConf(self, path):
-        def getString(var):
-            return bb.data.getVar(var, data, True) or ""
-
-        self.local = path
-
-        if self.orig_config:
-            del self.orig_config
-            self.orig_config = {}
-
-        data = bb.data.init()
-        data = self._parse(self.local, data)
-
-        # We only need to care about certain variables
-        mach = getString('MACHINE')
-        if mach and mach != self.config.get('MACHINE', ''):
-            self.config['MACHINE'] = mach
-        sdkmach = getString('SDKMACHINE')
-        if sdkmach and sdkmach != self.config.get('SDKMACHINE', ''):
-            self.config['SDKMACHINE'] = sdkmach
-        distro = getString('DISTRO')
-        if distro and distro != self.config.get('DISTRO', ''):
-            self.config['DISTRO'] = distro
-        bbnum = getString('BB_NUMBER_THREADS')
-        if bbnum and bbnum != self.config.get('BB_NUMBER_THREADS', ''):
-            self.config['BB_NUMBER_THREADS'] = bbnum
-        pmake = getString('PARALLEL_MAKE')
-        if pmake and pmake != self.config.get('PARALLEL_MAKE', ''):
-            self.config['PARALLEL_MAKE'] = pmake
-        pclass = getString('PACKAGE_CLASSES')
-        if pclass and pclass != self.config.get('PACKAGE_CLASSES', ''):
-            self.config['PACKAGE_CLASSES'] = pclass
-        fstypes = getString('IMAGE_FSTYPES')
-        if fstypes and fstypes != self.config.get('IMAGE_FSTYPES', ''):
-            self.config['IMAGE_FSTYPES'] = fstypes
-
-        # Values which aren't always set in the conf must be explicitly
-        # loaded as empty values for save to work
-        incompat = getString('INCOMPATIBLE_LICENSE')
-        if incompat and incompat != self.config.get('INCOMPATIBLE_LICENSE', ''):
-            self.config['INCOMPATIBLE_LICENSE'] = incompat
-        else:
-            self.config['INCOMPATIBLE_LICENSE'] = ""
-
-        # Non-standard, namespaces, variables for GUI preferences
-        toolchain = getString('HOB_BUILD_TOOLCHAIN')
-        if toolchain and toolchain != self.config.get('HOB_BUILD_TOOLCHAIN', ''):
-            self.config['HOB_BUILD_TOOLCHAIN'] = toolchain
-        header = getString('HOB_BUILD_TOOLCHAIN_HEADERS')
-        if header and header != self.config.get('HOB_BUILD_TOOLCHAIN_HEADERS', ''):
-            self.config['HOB_BUILD_TOOLCHAIN_HEADERS'] = header
-
-        self.orig_config = copy.deepcopy(self.config)
-
-    def setLocalConfVar(self, var, val):
-        self.config[var] = val
-
-    def getLocalConfVar(self, var):
-        if var in self.config:
-            return self.config[var]
-        else:
-            return ""
 
     def _loadLayerConf(self, path):
         self.bblayers = path
@@ -136,9 +109,7 @@ class Configurator(gobject.GObject):
 
     def _addConfigFile(self, path):
         pref, sep, filename = path.rpartition("/")
-        if filename == "local.conf":
-            self._loadLocalConf(path)
-        elif filename == "bblayers.conf":
+        if filename == "bblayers.conf":
             self._loadLayerConf(path)
 
     def _splitLayer(self, path):
@@ -219,71 +190,6 @@ class Configurator(gobject.GObject):
         # Write the contents list object to the conf file
         with open(conffile, "w") as new:
             new.write("".join(contents))
-
-    def writeLocalConf(self):
-        # Dictionary containing only new or modified variables
-        changed_values = {}
-        for var in self.config:
-            val = self.config[var]
-            if self.orig_config.get(var, None) != val:
-                changed_values[var] = val
-
-        if not len(changed_values):
-            return
-
-        # read the original conf into a list
-        with open(self.local, 'r') as config:
-            config_lines = config.readlines()
-
-        new_config_lines = ["\n"]
-        for var in changed_values:
-            # Convenience function for re.subn(). If the pattern matches
-            # return a string which contains an assignment using the same
-            # assignment operator as the old assignment.
-            def replace_val(matchobj):
-                var = matchobj.group(1) # config variable
-                op = matchobj.group(2) # assignment operator
-                val = changed_values[var] # new config value
-                return "%s %s \"%s\"" % (var, op, val)
-
-            pattern = '^\s*(%s)\s*([+=?.]+)(.*)' % re.escape(var)
-            p = re.compile(pattern)
-            cnt = 0
-            replaced = False
-
-            # Iterate over the local.conf lines and if they are a match
-            # for the pattern comment out the line and append a new line
-            # with the new VAR op "value" entry
-            for line in config_lines:
-                new_line, replacements = p.subn(replace_val, line)
-                if replacements:
-                    config_lines[cnt] = "#%s" % line
-                    new_config_lines.append(new_line)
-                    replaced = True
-                cnt = cnt + 1
-
-            if not replaced:
-                new_config_lines.append("%s = \"%s\"\n" % (var, changed_values[var]))
-
-        # Add the modified variables
-        config_lines.extend(new_config_lines)
-
-        self.writeConfFile(self.local, config_lines)
-
-        del self.orig_config
-        self.orig_config = copy.deepcopy(self.config)
-
-    def insertTempBBPath(self, bbpath, bbfiles):
-        # read the original conf into a list
-        with open(self.local, 'r') as config:
-            config_lines = config.readlines()
-
-        if bbpath:
-            config_lines.append("BBPATH := \"${BBPATH}:%s\"\n" % bbpath)
-        if bbfiles:
-            config_lines.append("BBFILES := \"${BBFILES} %s\"\n" % bbfiles)
-
-        self.writeConfFile(self.local, config_lines)
 
     def writeLayerConf(self):
         # If we've not added/removed new layers don't write

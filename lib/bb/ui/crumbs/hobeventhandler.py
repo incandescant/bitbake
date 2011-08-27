@@ -20,7 +20,6 @@
 
 import gobject
 import logging
-import tempfile
 import datetime
 
 progress_total = 0
@@ -41,11 +40,14 @@ class HobHandler(gobject.GObject):
                                   gobject.TYPE_NONE,
                                   (gobject.TYPE_PYOBJECT,)),
          "package-formats-found" : (gobject.SIGNAL_RUN_LAST,
-                                  gobject.TYPE_NONE,
-                                  (gobject.TYPE_PYOBJECT,)),
+                                    gobject.TYPE_NONE,
+                                    (gobject.TYPE_PYOBJECT,)),
          "config-found"        : (gobject.SIGNAL_RUN_LAST,
                                   gobject.TYPE_NONE,
                                   (gobject.TYPE_STRING,)),
+         "config-loaded"       : (gobject.SIGNAL_RUN_LAST,
+                                  gobject.TYPE_NONE,
+                                  ()),
          "generating-data"     : (gobject.SIGNAL_RUN_LAST,
                                   gobject.TYPE_NONE,
                                   ()),
@@ -65,9 +67,9 @@ class HobHandler(gobject.GObject):
                                    gobject.TYPE_STRING,)),
     }
 
-    (CFG_PATH_LOCAL, CFG_PATH_LAYERS, CFG_FILES_DISTRO, CFG_FILES_MACH, CFG_FILES_SDK, FILES_MATCH_CLASS, GENERATE_TGTS, REPARSE_FILES, BUILD_IMAGE) = range(9)
+    (CFG_PATH_LAYERS, CFG_FILES_DISTRO, CFG_FILES_MACH, CFG_FILES_SDK, FILES_MATCH_CLASS, GENERATE_TGTS, REPARSE_FILES, BUILD_IMAGE) = range(8)
 
-    def __init__(self, taskmodel, server):
+    def __init__(self, taskmodel, server, configurator):
         gobject.GObject.__init__(self)
 
         self.current_command = None
@@ -77,10 +79,10 @@ class HobHandler(gobject.GObject):
         self.generating = False
         self.build_queue = []
         self.current_phase = None
-        self.image_dir = None
 
         self.model = taskmodel
         self.server = server
+        self.configurator = configurator
 
         self.image_output_types = self.server.runCommand(["getVariable", "IMAGE_FSTYPES"]).split(" ")
 
@@ -89,10 +91,7 @@ class HobHandler(gobject.GObject):
             self.emit("generating-data")
             self.generating = True
 
-        if self.current_command == self.CFG_PATH_LOCAL:
-            self.current_command = self.CFG_PATH_LAYERS
-            self.server.runCommand(["findConfigFilePath", "bblayers.conf"])
-        elif self.current_command == self.CFG_PATH_LAYERS:
+        if self.current_command == self.CFG_PATH_LAYERS:
             self.current_command = self.CFG_FILES_DISTRO
             self.server.runCommand(["findConfigFiles", "DISTRO"])
         elif self.current_command == self.CFG_FILES_DISTRO:
@@ -125,6 +124,14 @@ class HobHandler(gobject.GObject):
                 self.emit("data-generated")
                 self.generating = False
             self.server.runCommand(["buildTargets", self.build_queue, "build"])
+            print("MACHINE = %s" % self.server.runCommand(["getVariable", "MACHINE"]))
+            print("PACKAGE_ARCH = %s" % self.server.runCommand(["getVariable", "PACKAGE_ARCH"]))
+            print("MACHINE_ARCH = %s" % self.server.runCommand(["getVariable", "MACHINE_ARCH"]))
+            print("PACKAGE_EXTRA_ARCHS = %s" % self.server.runCommand(["getVariable", "PACKAGE_EXTRA_ARCHS"]))
+            print("PACKAGE_ARCHS = %s" % self.server.runCommand(["getVariable", "PACKAGE_ARCHS"]))
+            print("MULTIMACH_TARGET_SYS = %s" % self.server.runCommand(["getVariable", "MULTIMACH_TARGET_SYS"]))
+            print("TUNE_PKGARCH = %s" % self.server.runCommand(["getVariable", "TUNE_PKGARCH"]))
+            print("buildTargets %s" % (" ".join(self.build_queue)))
             self.build_queue = []
             self.current_command = None
 
@@ -136,10 +143,15 @@ class HobHandler(gobject.GObject):
         if self.building:
             self.current_phase = "building"
             running_build.handle_event(event)
+        elif isinstance(event, bb.event.DataInitialised):
+            self.set_variables()
         elif isinstance(event, bb.event.TargetsTreeGenerated):
             self.current_phase = "data generation"
             if event._model:
                 self.model.populate(event._model)
+        elif isinstance(event, bb.event.ConfigParsed):
+            self.insertTempBBPath()
+            self.emit("config-loaded")
         elif isinstance(event, bb.event.ConfigFilesFound):
             self.current_phase = "configuration lookup"
             var = event._variable
@@ -176,6 +188,7 @@ class HobHandler(gobject.GObject):
             self.run_next_command()
         elif isinstance(event, bb.command.CommandFailed):
             self.emit("command-failed", event.error)
+            print(event.error)
         elif isinstance(event, bb.event.CacheLoadStarted):
             self.current_phase = "cache loading"
             bb.ui.crumbs.hobeventhandler.progress_total = event.total
@@ -213,6 +226,21 @@ class HobHandler(gobject.GObject):
             event = eventHandler.getEvent()
         return True
 
+    def set_variables(self):
+        print("set_variables")
+        # Iterate BitBake configuration variables defined in hob preferences
+        # and set them in the data store
+        envvars = bb.utils.approved_variables()
+        values = self.configurator.hob_conf.items('BitBake')
+        for v in values:
+            var = v[0].upper()
+            val = v[1]
+            self.server.runCommand(["setVariable", var, val])
+            print("Setting %s to %s" % (var, val))
+            if var in envvars:
+                os.environ[var] = val
+                print("Setting %s in env to %s" % (var, val))
+
     def set_machine(self, machine):
         self.server.runCommand(["setVariable", "MACHINE", machine])
 
@@ -239,6 +267,31 @@ class HobHandler(gobject.GObject):
         pmake = "-j %s" % threads
         self.server.runCommand(["setVariable", "BB_NUMBER_THREADS", pmake])
 
+    def insertTempBBPath(self):
+        print("insertTempBBPath")
+        image_dir = self.configurator.hob_conf.get('hob', 'HobRecipePath')
+
+        bbpath = self.server.runCommand(["getVariable", "BBPATH"])
+        print("BBPATH is %s" % bbpath)
+        if not image_dir in bbpath.split(":"):
+            bbpath = bbpath + ":" + image_dir
+            print("Setting BBPATH to %s" % bbpath)
+            #self.server.runCommand(["setVariable", "BBPATH", bbpath])
+
+        bbfiles_ok = False
+        bbfiles = self.server.runCommand(["getVariable", "BBFILES"])
+        print("BBFILES is %s" % bbfiles)
+        for files in bbfiles.split(" "):
+            import re
+            pattern = "%s/\*.bb" % image_dir
+            if re.match(pattern, files):
+                bbfiles_ok = True
+
+        if not bbfiles_ok:
+            bbfiles = bbfiles + " %s/*.bb" % image_dir
+            print("Setting BBFILES to %s" % bbfiles)
+            #self.server.runCommand(["setVariable", "BBFILES", bbfiles])
+
     def build_image(self, image, configurator):
         targets = []
         targets.append(image)
@@ -247,32 +300,6 @@ class HobHandler(gobject.GObject):
         elif self.build_toolchain:
             targets.append("meta-toolchain")
         self.build_queue = targets
-
-        bbpath_ok = False
-        bbpath = self.server.runCommand(["getVariable", "BBPATH"])
-        if self.image_dir in bbpath.split(":"):
-            bbpath_ok = True
-
-        bbfiles_ok = False
-        bbfiles = self.server.runCommand(["getVariable", "BBFILES"]).split(" ")
-        for files in bbfiles:
-            import re
-            pattern = "%s/\*.bb" % self.image_dir
-            if re.match(pattern, files):
-                bbfiles_ok = True
-
-        if not bbpath_ok:
-            nbbp = self.image_dir
-        else:
-            nbbp = None
-
-        if not bbfiles_ok:
-            nbbf = "%s/*.bb" % self.image_dir
-        else:
-            nbbf = None
-
-        if not bbfiles_ok or not bbpath_ok:
-            configurator.insertTempBBPath(nbbp, nbbf)
 
         self.current_command = self.REPARSE_FILES
         self.run_next_command()
@@ -323,14 +350,16 @@ class HobHandler(gobject.GObject):
         return self.server.runCommand(["getVariable", "DEPLOY_DIR_IMAGE"])
 
     def make_temp_dir(self):
-        self.image_dir = os.path.join(tempfile.gettempdir(), 'hob-images')
-        bb.utils.mkdirhier(self.image_dir)
+        image_dir = self.configurator.hob_conf.get('hob', 'HobRecipePath')
+        bb.utils.mkdirhier(image_dir)
 
     def remove_temp_dir(self):
-        bb.utils.remove(self.image_dir, True)
+        image_dir = self.configurator.hob_conf.get('hob', 'HobRecipePath')
+        bb.utils.remove(image_dir, True)
 
     def get_temp_recipe_path(self, name):
+        image_dir = self.configurator.hob_conf.get('hob', 'HobRecipePath')
         timestamp = datetime.date.today().isoformat()
         image_file = "hob-%s-variant-%s.bb" % (name, timestamp)
-        recipepath =  os.path.join(self.image_dir, image_file)
+        recipepath =  os.path.join(image_dir, image_file)
         return recipepath
