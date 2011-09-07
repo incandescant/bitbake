@@ -43,7 +43,7 @@ except ImportError:
     logger.info("Importing cPickle failed. "
                 "Falling back to a very slow implementation.")
 
-__cache_version__ = "142"
+__cache_version__ = "143"
 
 def getCacheFile(path, filename):
     return os.path.join(path, filename)
@@ -282,7 +282,7 @@ class Cache(object):
         newest_mtime = 0
         deps = bb.data.getVar("__base_depends", data)
 
-        old_mtimes = [old_mtime for _, old_mtime in deps]
+        old_mtimes = deps.values()
         old_mtimes.append(newest_mtime)
         newest_mtime = max(old_mtimes)
 
@@ -406,12 +406,12 @@ class Cache(object):
         """Parse the specified filename, returning the recipe information"""
         infos = []
         datastores = cls.load_bbfile(filename, appends, configdata)
-        depends = set()
+        depends = {}
         for variant, data in sorted(datastores.iteritems(),
                                     key=lambda i: i[0],
                                     reverse=True):
             virtualfn = cls.realfn2virtual(filename, variant)
-            depends |= (data.getVar("__depends", False) or set())
+            depends.update(data.getVar("__depends", False) or {})
             if depends and not variant:
                 data.setVar("__depends", depends)
 
@@ -512,8 +512,9 @@ class Cache(object):
         # Check dependencies are still valid
         depends = info_array[0].file_depends
         if depends:
-            for f, old_mtime in depends:
+            for f in depends:
                 fmtime = bb.parse.cached_mtime_noerror(f)
+                old_mtime = depends[f]
                 # Check if file still exists
                 if old_mtime != 0 and fmtime == 0:
                     logger.debug(2, "Cache: %s's dependency %s was removed",

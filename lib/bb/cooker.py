@@ -627,12 +627,12 @@ class BBCooker:
         # Generate a list of parsed configuration files by searching the files
         # listed in the __depends and __base_depends variables with a .conf suffix.
         conffiles = []
-        dep_files = bb.data.getVar('__depends', self.configuration.data) or set()
-        dep_files.union(bb.data.getVar('__base_depends', self.configuration.data) or set())
+        dep_files = bb.data.getVar('__depends', self.configuration.data) or {}
+        dep_files.update(bb.data.getVar('__base_depends', self.configuration.data) or {})
 
         for f in dep_files:
-            if f[0].endswith(".conf"):
-                conffiles.append(f[0])
+            if f.endswith(".conf"):
+                conffiles.append(f)
 
         _, conf, conffile = path.rpartition("conf/")
         match = os.path.join(conf, conffile)

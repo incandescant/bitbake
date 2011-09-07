@@ -994,12 +994,12 @@ def main (server, eventHandler):
     # We hope to adjust this long term as tracked in Yocto Bugzilla #1441
     # http://bugzilla.pokylinux.org/show_bug.cgi?id=1441
     reqfiles = 0
-    dep_files = server.runCommand(["getVariable", "__depends"]) or set()
-    dep_files.union(server.runCommand(["getVariable", "__base_depends"]) or set())
+    dep_files = server.runCommand(["getVariable", "__depends"]) or {}
+    dep_files.update(server.runCommand(["getVariable", "__base_depends"]) or {})
     for f in dep_files:
-        if f[0].endswith("hob-pre.conf"):
+        if f.endswith("hob-pre.conf"):
             reqfiles = reqfiles + 1
-        elif f[0].endswith("hob-post.conf"):
+        elif f.endswith("hob-post.conf"):
             reqfiles = reqfiles + 1
         if reqfiles == 2:
             break
