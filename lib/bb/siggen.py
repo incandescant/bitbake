@@ -201,7 +201,12 @@ class SignatureGeneratorBasic(SignatureGenerator):
             for dep in data['runtaskdeps']:
                 data['runtaskhashes'][dep] = self.taskhash[dep]
 
-        p = pickle.Pickler(file(sigfile, "wb"), -1)
+        # Create file with permissive (0777) read/write for easier sharing
+        f = os.fdopen(os.open(sigfile, os.O_RDWR|os.O_CREAT), "wb")
+        # os.open() and os.fdopen() are affected by the users umask so brute force
+        # the permissions with a call to chmod
+        os.chmod(sigfile, 0777)
+        p = pickle.Pickler(f, -1)
         p.dump(data)
 
     def dump_sigs(self, dataCache):
