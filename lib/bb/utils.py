@@ -531,13 +531,16 @@ def prune_suffix(var, suffixes, d):
             return var.replace(suffix, "")
     return var
 
-def mkdirhier(directory):
+def mkdirhier(directory, mode=0777):
     """Create a directory like 'mkdir -p', but does not complain if
     directory already exists like os.makedirs
     """
 
     try:
-        os.makedirs(directory)
+        os.makedirs(directory, mode)
+        # We can't rely on makedirs having set the mode correctly as it is
+        # affected by umask
+        os.chmod(directory, mode)
     except OSError as e:
         if e.errno != errno.EEXIST:
             raise e
